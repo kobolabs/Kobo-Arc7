@@ -1,0 +1,566 @@
+diff --git a/kernel/build.sh b/kernel/build.sh
+index e75b63c..6d4a6d4 100755
+--- a/kernel/build.sh
++++ b/kernel/build.sh
+@@ -1,5 +1,4 @@
+ #!/bin/bash
+-echo build.sh called with $@
+ # Default settings
+ verfile="android.ver"
+ curcfg=".config"
+diff --git a/mediatek/custom/common/kernel/accelerometer/mpu6050g/mpu6050.c b/mediatek/custom/common/kernel/accelerometer/mpu6050g/mpu6050.c
+index 08c9cd5..dfaeffc 100644
+--- a/mediatek/custom/common/kernel/accelerometer/mpu6050g/mpu6050.c
++++ b/mediatek/custom/common/kernel/accelerometer/mpu6050g/mpu6050.c
+@@ -180,6 +180,13 @@ static struct data_resolution mpu6050_offset_resolution = {{ 0, 5}, 2048};
+ 
+ static unsigned int power_on = 0;
+ 
++//Herman:workaround for touch:begin
++#define NEGAIEV_Z_VAULE -2000
++#define FACEDOWN_COUNT_MAX 7
++#define FACEDOWN_COUNT_THR 5
++int lcdFaceDownCnt = 0;
++bool isLcdFaceDown= false;
++//Herman:workaround for touch:end
+ 
+ extern int MPU6050_gyro_power();
+ extern int MPU6050_gyro_mode();
+@@ -1104,6 +1111,25 @@ static int MPU6050_ReadSensorData(struct i2c_client *client, char *buf, int bufs
+         obj->data[MPU6050_AXIS_Y] += obj->cali_sw[MPU6050_AXIS_Y];
+         obj->data[MPU6050_AXIS_Z] += obj->cali_sw[MPU6050_AXIS_Z];
+ 
++        //Herman:workaround for touch:begin
++        if(obj->data[MPU6050_AXIS_Z] < NEGAIEV_Z_VAULE)
++        {
++              if(lcdFaceDownCnt< FACEDOWN_COUNT_MAX)
++	 	   lcdFaceDownCnt++;
++        }
++	 else
++	 {
++              if(lcdFaceDownCnt > 0)
++	 	   lcdFaceDownCnt--;
++        }
++	 if(lcdFaceDownCnt >= FACEDOWN_COUNT_THR)
++	    isLcdFaceDown = true;
++	 else
++	    isLcdFaceDown = false;
++
++        printk("MPU6050H:data+cal(%d, %d, %d)(%d, %d)\n", obj->data[MPU6050_AXIS_X],obj->data[MPU6050_AXIS_Y],obj->data[MPU6050_AXIS_Z],isLcdFaceDown,lcdFaceDownCnt);	  
++        //Herman:workaround for touch:end
++	 
+         /*remap coordinate*/
+         acc[obj->cvt.map[MPU6050_AXIS_X]] = obj->cvt.sign[MPU6050_AXIS_X]*obj->data[MPU6050_AXIS_X];
+         acc[obj->cvt.map[MPU6050_AXIS_Y]] = obj->cvt.sign[MPU6050_AXIS_Y]*obj->data[MPU6050_AXIS_Y];
+@@ -1807,6 +1833,10 @@ int gsensor_operate(void* self, uint32_t command, void* buff_in, int size_in,
+             else
+             {
+                 err = MPU6050_SetPowerMode( priv->client, !sensor_power);
++                //Herman:workaround for touch:begin				
++                printk("MPU6050H:SENSOR_ENABLE(%d)",value);
++                isLcdFaceDown = false;
++                //Herman:workaround for touch:end				 
+             }
+         }
+         break;
+@@ -2104,7 +2134,7 @@ static void mpu6050_early_suspend(struct early_suspend *h)
+     int err;
+     u8 databuf[2];
+     GSE_FUN();    
+-
++    isLcdFaceDown = false; //Herman:workaround for touch
+     if (obj == NULL)
+     {
+         GSE_ERR("null pointer!!\n");
+@@ -2135,7 +2165,7 @@ static void mpu6050_late_resume(struct early_suspend *h)
+ {
+     struct mpu6050_i2c_data *obj = container_of(h, struct mpu6050_i2c_data, early_drv);         
+     int err;
+-    GSE_FUN();
++    GSE_FUN();  
+ 
+     if (obj == NULL)
+     {
+diff --git a/mediatek/custom/common/kernel/alsps/stk2203/stk2203.c b/mediatek/custom/common/kernel/alsps/stk2203/stk2203.c
+index 7d83022..8f804f5 100755
+--- a/mediatek/custom/common/kernel/alsps/stk2203/stk2203.c
++++ b/mediatek/custom/common/kernel/alsps/stk2203/stk2203.c
+@@ -338,6 +338,9 @@ int stk2203_master_send(struct i2c_client *client, u16 addr, u8 *buf ,int count)
+ 	return (ret == 0) ? count : ret;
+ }
+ /*----------------------------------------------------------------------------*/
++
++u32 als_value = 0;
++
+ int stk2203_read_als(struct i2c_client *client, u16 *data)
+ {
+ 	struct stk2203_priv *obj = i2c_get_clientdata(client);    
+@@ -362,6 +365,7 @@ int stk2203_read_als(struct i2c_client *client, u16 *data)
+ 	{
+ 		APS_DBG("ALS: 0x%04X\n", (u32)(*data));
+ 	}
++	als_value = (u32)(*data);
+  
+ 	return 0;    
+ }
+@@ -477,6 +481,7 @@ static void stk2203_power(struct alsps_hw *hw, unsigned int on)
+ 	}
+ 	power_on = on;
+ }
++int als_enable_flag = 0;
+ /*----------------------------------------------------------------------------*/
+ static int stk2203_enable_als(struct i2c_client *client, int enable)
+ {
+@@ -484,6 +489,8 @@ static int stk2203_enable_als(struct i2c_client *client, int enable)
+ 	int err, cur = 0, old = atomic_read(&obj->als_cmd_val);
+ 	int trc = atomic_read(&obj->trace);
+ 
++	als_enable_flag = enable;
++
+ 	if(enable)
+ 	{
+ 		cur = old & (~SD_ALS);   
+diff --git a/mediatek/custom/common/kernel/hdmi/mt8193/mt8193edid.c b/mediatek/custom/common/kernel/hdmi/mt8193/mt8193edid.c
+index 330963f..cfecaf7 100755
+--- a/mediatek/custom/common/kernel/hdmi/mt8193/mt8193edid.c
++++ b/mediatek/custom/common/kernel/hdmi/mt8193/mt8193edid.c
+@@ -1362,7 +1362,8 @@ void vParserExtEDIDState(u8 *prEdid)
+ void mt8193_checkedid(u8 i1noedid)
+ {
+   u8 bTemp;
+-  u8 bRetryCount= 2;
++  //u8 bRetryCount= 2;
++  u8 bRetryCount= 4; //20131031brandon_chang: increase retry time
+   u8 i;
+   MT8193_EDID_FUNC();
+ 
+@@ -1420,7 +1421,8 @@ void mt8193_checkedid(u8 i1noedid)
+       return;
+     }
+     }
+-      udelay(5);
++      //udelay(5);
++      msleep(100);//20131031brandon_chang: increase timeout
+   }
+ 
+   if((i4SharedInfo(SI_EDID_EXT_BLOCK_NO)*EDID_BLOCK_LEN) < EDID_SIZE)//for Buffer Overflow error
+diff --git a/mediatek/custom/common/kernel/touchpanel/ft5x06tb/ft5x06_driver.c b/mediatek/custom/common/kernel/touchpanel/ft5x06tb/ft5x06_driver.c
+index db08db1..cc2f9dd 100644
+--- a/mediatek/custom/common/kernel/touchpanel/ft5x06tb/ft5x06_driver.c
++++ b/mediatek/custom/common/kernel/touchpanel/ft5x06tb/ft5x06_driver.c
+@@ -108,6 +108,13 @@ static int tpd_detect(struct i2c_client *client, int kind, struct i2c_board_info
+ static int __devexit tpd_remove(struct i2c_client *client);
+ static int touch_event_handler(void *unused);
+ 
++//---------------------------
++extern bool isLcdFaceDown;
++extern int als_enable_flag;
++extern u32 als_value;
++//---------------------------
++int allow_auto_disable = 0;
++
+ static int tpd_flag = 0;
+ static int point_num = 0;
+ static int p_point_num = 0;
+@@ -1578,6 +1585,19 @@ static ssize_t ft5x0x_auto_upgrade_show(struct device *dev, struct device_attrib
+ static DEVICE_ATTR(auto_upgrade, 0644, ft5x0x_auto_upgrade_show, NULL);
+ /* [LBP5][Optical][Touch] BUgID:75, Touch - auto firmware upgrade, 2013-05-21, Add End */
+ 
++static ssize_t auto_disable_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	return sprintf(buf, "%d\n", allow_auto_disable);
++}
++
++static ssize_t auto_disable_store(struct device *dev, struct device_attribute *attr, char *buf, size_t count)
++{
++	sscanf(buf, "%d", &allow_auto_disable);
++	return count;
++}
++
++static DEVICE_ATTR(auto_disable, S_IRUGO | S_IWUSR | S_IWGRP, auto_disable_show, auto_disable_store);
++
+ static struct attribute *ft5x06_touch_attributes[] = {
+ 	&dev_attr_ftmping.attr,
+ 	&dev_attr_ftmfirmware.attr,
+@@ -1589,6 +1609,7 @@ static struct attribute *ft5x06_touch_attributes[] = {
+ 	&dev_attr_ftm_selftest.attr,
+ 	&dev_attr_check_upgrade_result.attr,
+ 	&dev_attr_auto_upgrade.attr,
++	&dev_attr_auto_disable.attr,
+ NULL
+ };
+ /* [LBP5][Optical][Touch] BugID:46, 2013-04-24, Mod End */
+@@ -1674,6 +1695,18 @@ static int tpd_touchinfo(struct touch_info *cinfo, struct touch_info *pinfo)
+ 	p_point_num = point_num;
+         memcpy(pinfo, cinfo, sizeof(struct touch_info));
+         memset(cinfo, 0, sizeof(struct touch_info));
++
++	if (allow_auto_disable) {
++		printk("[TP] als_enable_flag = %d\n", als_enable_flag);
++		printk("[TP] isLcdFaceDown = %d, als_value = 0x%x\n", isLcdFaceDown, als_value);
++		if(als_enable_flag == true)
++		{
++			if(isLcdFaceDown==true && als_value == 0x0)
++			{
++				return false;
++			}
++		}
++	}
+ /* modify by focaltech fae start */
+ #if 0
+ 	i2c_smbus_read_i2c_block_data(i2c_client, 0x00, 8, &(data[0]));
+diff --git a/mediatek/custom/lbp8/kernel/dct/dct/cust_adc.h b/mediatek/custom/lbp8/kernel/dct/dct/cust_adc.h
+index f8735a6..d0794ce 100644
+--- a/mediatek/custom/lbp8/kernel/dct/dct/cust_adc.h
++++ b/mediatek/custom/lbp8/kernel/dct/dct/cust_adc.h
+@@ -1,6 +1,6 @@
+ /*
+  * Generated by MTK SP Drv_CodeGen Version 08.01.0 for MT6589_NP. Copyright MediaTek Inc. (C) 2012.
+- * Wed Feb 26 15:46:33 2014
++ * Tue Feb 10 17:51:41 2015
+  * Do Not Modify the File.
+  */
+ 
+diff --git a/mediatek/custom/lbp8/kernel/dct/dct/cust_eint.h b/mediatek/custom/lbp8/kernel/dct/dct/cust_eint.h
+index 543a944..688f118 100644
+--- a/mediatek/custom/lbp8/kernel/dct/dct/cust_eint.h
++++ b/mediatek/custom/lbp8/kernel/dct/dct/cust_eint.h
+@@ -1,6 +1,6 @@
+ /*
+  * Generated by MTK SP Drv_CodeGen Version 10.03.0 for MT6589_NP. Copyright MediaTek Inc. (C) 2012.
+- * Wed Feb 26 15:46:33 2014
++ * Tue Feb 10 17:51:41 2015
+  * Do Not Modify the File.
+  */
+ 
+diff --git a/mediatek/custom/lbp8/kernel/dct/dct/cust_eint_ext.h b/mediatek/custom/lbp8/kernel/dct/dct/cust_eint_ext.h
+index ce63573..362b534 100644
+--- a/mediatek/custom/lbp8/kernel/dct/dct/cust_eint_ext.h
++++ b/mediatek/custom/lbp8/kernel/dct/dct/cust_eint_ext.h
+@@ -1,6 +1,6 @@
+ /*
+  * Generated by MTK SP DrvGen Version 10.03.0 for MT6589_NP. Copyright MediaTek Inc. (C) 2012.
+- * Wed Feb 26 15:46:33 2014
++ * Tue Feb 10 17:51:41 2015
+  * Do Not Modify the File.
+  */
+ 
+diff --git a/mediatek/custom/lbp8/kernel/dct/dct/cust_eint_md1.h b/mediatek/custom/lbp8/kernel/dct/dct/cust_eint_md1.h
+index 47668b1..4f71db5 100644
+--- a/mediatek/custom/lbp8/kernel/dct/dct/cust_eint_md1.h
++++ b/mediatek/custom/lbp8/kernel/dct/dct/cust_eint_md1.h
+@@ -1,6 +1,6 @@
+ /*
+  * Generated by MTK SP DrvGen Version 10.03.0 for MT6589_NP. Copyright MediaTek Inc. (C) 2012.
+- * Wed Feb 26 15:46:33 2014
++ * Tue Feb 10 17:51:41 2015
+  * Do Not Modify the File.
+  */
+ 
+diff --git a/mediatek/custom/lbp8/kernel/dct/dct/cust_eint_md2.h b/mediatek/custom/lbp8/kernel/dct/dct/cust_eint_md2.h
+index 9780de7..61e983f 100644
+--- a/mediatek/custom/lbp8/kernel/dct/dct/cust_eint_md2.h
++++ b/mediatek/custom/lbp8/kernel/dct/dct/cust_eint_md2.h
+@@ -1,6 +1,6 @@
+ /*
+  * Generated by MTK SP DrvGen Version 10.03.0 for MT6589_NP. Copyright MediaTek Inc. (C) 2012.
+- * Wed Feb 26 15:46:33 2014
++ * Tue Feb 10 17:51:41 2015
+  * Do Not Modify the File.
+  */
+ 
+diff --git a/mediatek/custom/lbp8/kernel/dct/dct/cust_gpio_boot.h b/mediatek/custom/lbp8/kernel/dct/dct/cust_gpio_boot.h
+index c0721b7..d4766a3 100644
+--- a/mediatek/custom/lbp8/kernel/dct/dct/cust_gpio_boot.h
++++ b/mediatek/custom/lbp8/kernel/dct/dct/cust_gpio_boot.h
+@@ -1,6 +1,6 @@
+ /*
+  * Generated by MTK SP Drv_CodeGen Version 10.03.0 for MT6589_NP. Copyright MediaTek Inc. (C) 2012.
+- * Wed Feb 26 15:46:33 2014
++ * Tue Feb 10 17:51:41 2015
+  * Do Not Modify the File.
+  */
+ 
+diff --git a/mediatek/custom/lbp8/kernel/dct/dct/cust_gpio_usage.h b/mediatek/custom/lbp8/kernel/dct/dct/cust_gpio_usage.h
+index 63202b3..4c9d674 100644
+--- a/mediatek/custom/lbp8/kernel/dct/dct/cust_gpio_usage.h
++++ b/mediatek/custom/lbp8/kernel/dct/dct/cust_gpio_usage.h
+@@ -1,6 +1,6 @@
+ /*
+  * Generated by MTK SP Drv_CodeGen Version 10.03.0 for MT6589_NP. Copyright MediaTek Inc. (C) 2012.
+- * Wed Feb 26 15:46:33 2014
++ * Tue Feb 10 17:51:41 2015
+  * Do Not Modify the File.
+  */
+ 
+diff --git a/mediatek/custom/lbp8/kernel/dct/dct/cust_kpd.h b/mediatek/custom/lbp8/kernel/dct/dct/cust_kpd.h
+index 753c0ae..55c993b 100644
+--- a/mediatek/custom/lbp8/kernel/dct/dct/cust_kpd.h
++++ b/mediatek/custom/lbp8/kernel/dct/dct/cust_kpd.h
+@@ -1,6 +1,6 @@
+ /*
+  * Generated by MTK SP Drv_CodeGen Version 10.03.0 for MT6589_NP. Copyright MediaTek Inc. (C) 2012.
+- * Wed Feb 26 15:46:33 2014
++ * Tue Feb 10 17:51:41 2015
+  * Do Not Modify the File.
+  */
+ 
+diff --git a/mediatek/custom/lbp8/kernel/dct/dct/cust_power.h b/mediatek/custom/lbp8/kernel/dct/dct/cust_power.h
+index 4140e01..bd43f8c 100644
+--- a/mediatek/custom/lbp8/kernel/dct/dct/cust_power.h
++++ b/mediatek/custom/lbp8/kernel/dct/dct/cust_power.h
+@@ -1,6 +1,6 @@
+ /*
+  * Generated by MTK SP DrvGen Version 10.03.0 for MT6589_NP. Copyright MediaTek Inc. (C) 2012.
+- * Wed Feb 26 15:46:33 2014
++ * Tue Feb 10 17:51:41 2015
+  * Do Not Modify the File.
+  */
+ 
+diff --git a/mediatek/custom/lbp8/kernel/dct/dct/pmic_drv.c b/mediatek/custom/lbp8/kernel/dct/dct/pmic_drv.c
+index 442f148..f6596ee 100644
+--- a/mediatek/custom/lbp8/kernel/dct/dct/pmic_drv.c
++++ b/mediatek/custom/lbp8/kernel/dct/dct/pmic_drv.c
+@@ -1,6 +1,6 @@
+ /*
+  * Generated by MTK SP Drv_CodeGen Version 10.03.0 for MT6589_NP. Copyright MediaTek Inc. (C) 2012.
+- * Wed Feb 26 15:46:33 2014
++ * Tue Feb 10 17:51:41 2015
+  * Do Not Modify the File.
+  */
+ 
+diff --git a/mediatek/custom/lbp8/kernel/dct/dct/pmic_drv.h b/mediatek/custom/lbp8/kernel/dct/dct/pmic_drv.h
+index 0487803..1750079 100644
+--- a/mediatek/custom/lbp8/kernel/dct/dct/pmic_drv.h
++++ b/mediatek/custom/lbp8/kernel/dct/dct/pmic_drv.h
+@@ -1,6 +1,6 @@
+ /*
+  * Generated by MTK SP Drv_CodeGen Version 10.03.0 for MT6589_NP. Copyright MediaTek Inc. (C) 2012.
+- * Wed Feb 26 15:46:33 2014
++ * Tue Feb 10 17:51:41 2015
+  * Do Not Modify the File.
+  */
+ 
+diff --git a/mediatek/platform/mt6589/kernel/core/include/mach/mt_ptp.h b/mediatek/platform/mt6589/kernel/core/include/mach/mt_ptp.h
+index 159c223..0e452c4 100644
+--- a/mediatek/platform/mt6589/kernel/core/include/mach/mt_ptp.h
++++ b/mediatek/platform/mt6589/kernel/core/include/mach/mt_ptp.h
+@@ -13,17 +13,13 @@ typedef unsigned int        u32;
+ typedef signed long long    s64;
+ typedef unsigned long long  u64;
+ 
+-u32 PTP_VO_0, PTP_VO_1, PTP_VO_2, PTP_VO_3, PTP_VO_4, PTP_VO_5, PTP_VO_6, PTP_VO_7;
+-u32 PTP_init2_VO_0, PTP_init2_VO_1, PTP_init2_VO_2, PTP_init2_VO_3, PTP_init2_VO_4, PTP_init2_VO_5, PTP_init2_VO_6, PTP_init2_VO_7;
+-u32 PTP_INIT_FLAG = 0;
+-u32 PTP_DCVOFFSET = 0;
+-u32 PTP_AGEVOFFSET = 0;
+-
+ #define En_PTP_OD 1
+ #define PTP_Get_Real_Val 1
+ #define Set_PMIC_Volt 1
+ #define En_ISR_log 0
+ 
++#define ENHANCE_TURBO_OPP 1
++
+ #define ptp_fsm_int_b_IRQ_ID 32
+ 
+ #define ptp_read(addr)		(*(volatile u32 *)(addr))
+diff --git a/mediatek/platform/mt6589/kernel/core/mt_cpufreq.c b/mediatek/platform/mt6589/kernel/core/mt_cpufreq.c
+index 56982d8..6a8fff6 100644
+--- a/mediatek/platform/mt6589/kernel/core/mt_cpufreq.c
++++ b/mediatek/platform/mt6589/kernel/core/mt_cpufreq.c
+@@ -31,6 +31,7 @@
+ #include "mach/mt_clkmgr.h"
+ #include "mach/mt_cpufreq.h"
+ #include "mach/sync_write.h"
++#include "mach/mt_ptp.h"
+ 
+ #include <mach/pmic_mt6320_sw.h>
+ #include <mach/upmu_common.h>
+@@ -273,6 +274,9 @@ static void pmic_dvs_init_setting(void)
+     ret=pmic_config_interface(0x22E, 0x2, 0x3, 6);      // set 0x2 to Reg[0x22E] bit 7:6
+     ret=pmic_config_interface(0x250, 0x1, 0x3, 4);      // set 0x1 to Reg[0x250] bit 5:4
+     ret=pmic_config_interface(0x252, 0x8, 0x7F, 0);  // set 0x8 to Reg[0x252] bit 6:0 (set VSRAM settling voltage offset=50mV)
++    #if ENHANCE_TURBO_OPP
++        ret=pmic_config_interface(0x254, 0x5D38, 0xFFFF, 0);  // set 0x5D38 to Reg[0x254] bit 15:0 (set VSRAM HB to 1.28125V, LB to 1.05V)
++    #endif
+ }
+ 
+ static void pmic_dvs_set_before_volt_change(void)
+diff --git a/mediatek/platform/mt6589/kernel/core/mt_ptp.c b/mediatek/platform/mt6589/kernel/core/mt_ptp.c
+index dcad186..adf390d 100644
+--- a/mediatek/platform/mt6589/kernel/core/mt_ptp.c
++++ b/mediatek/platform/mt6589/kernel/core/mt_ptp.c
+@@ -34,6 +34,11 @@ extern void mt_fh_popod_restore(void);
+ extern void mt_cpufreq_return_default_DVS_by_ptpod(void);
+ extern unsigned int mt_cpufreq_voltage_set_by_ptpod(unsigned int pmic_volt[], unsigned int array_size);
+ 
++u32 PTP_VO_0, PTP_VO_1, PTP_VO_2, PTP_VO_3, PTP_VO_4, PTP_VO_5, PTP_VO_6, PTP_VO_7;
++u32 PTP_init2_VO_0, PTP_init2_VO_1, PTP_init2_VO_2, PTP_init2_VO_3, PTP_init2_VO_4, PTP_init2_VO_5, PTP_init2_VO_6, PTP_init2_VO_7;
++u32 PTP_INIT_FLAG = 0;
++u32 PTP_DCVOFFSET = 0;
++u32 PTP_AGEVOFFSET = 0;
+ 
+ u32 PTP_Enable = 1;
+ volatile u32 ptp_data[3] = {0xffffffff, 0, 0};
+@@ -137,8 +142,17 @@ static void PTP_set_ptp_volt(void)
+ 
+             return;
+         }
+-        	
+-        ptpod_pmic_volt[0] =  PTP_VO_0; 
++
++        #if ENHANCE_TURBO_OPP
++            ptpod_pmic_volt[0] =  PTP_VO_0 + 8;
++            if (ptpod_pmic_volt[0] > 0x5D)
++            {
++                ptpod_pmic_volt[0] = 0x5D;
++            }
++        #else
++            ptpod_pmic_volt[0] =  PTP_VO_0;
++        #endif
++
+         array_size++;
+     }
+     
+@@ -740,14 +754,7 @@ static void PTP_Monitor_Mode(PTP_Init_T* PTP_Init_val)
+     // clear all pending PTP interrupt & config PTPINTEN =================================================================
+     ptp_write(PTP_PTPINTSTS, 0xffffffff);
+     
+-    if (ptp_level < 1 || ptp_level > 3) // non-turbo no PTPOD
+-    {
+-        ptp_write(PTP_PTPINTEN, 0x00FFA002);
+-    }
+-    else
+-    {
+-        ptp_write(PTP_PTPINTEN, 0x00FF0000);
+-    }
++    ptp_write(PTP_PTPINTEN, 0x00FF0000);
+ 
+     // enable PTP monitor mode =================================================================
+     ptp_write(PTP_PTPEN, 0x00000002);
+@@ -1137,6 +1144,15 @@ static int ptp_probe(struct platform_device *pdev)
+         return 0;
+     }
+ 
++    ptp_level = PTP_get_ptp_level();
++
++    if (ptp_level < 1 || ptp_level > 3) // non-turbo no PTPOD
++    {
++        clc_notice("~~~ CLC : non-turbo disable PTPOD");
++        PTP_Enable = 0;
++        return 0;
++    }
++
+     // Set PTP IRQ =========================================
+     init_PTP_interrupt();
+ 
+@@ -1150,16 +1166,18 @@ static int ptp_probe(struct platform_device *pdev)
+     freq_6 = (u8)(mt_cpufreq_max_frequency_by_DVS(6) / 12000);
+     freq_7 = (u8)(mt_cpufreq_max_frequency_by_DVS(7) / 12000);
+ 
+-    ptp_level = PTP_get_ptp_level();
+-    
+     PTP_INIT_01();    
+ 
+     return 0;
+ }
+ 
+-
+ static int ptp_resume(struct platform_device *pdev)
+ {
++    if (ptp_level < 1 || ptp_level > 3) // non-turbo no PTPOD
++    {
++        return 0;
++    }
++
+     PTP_INIT_02();    
+     return 0;
+ }
+diff --git a/mediatek/platform/mt6589/kernel/drivers/dispsys/ddp_debug.c b/mediatek/platform/mt6589/kernel/drivers/dispsys/ddp_debug.c
+index 15f924c..a8b6d25 100644
+--- a/mediatek/platform/mt6589/kernel/drivers/dispsys/ddp_debug.c
++++ b/mediatek/platform/mt6589/kernel/drivers/dispsys/ddp_debug.c
+@@ -21,6 +21,7 @@
+ #include "ddp_path.h"
+ 
+ #include "disp_drv.h"
++#include "ddp_dpfd.h"
+ #include "../m4u/m4u.h"
+ // ---------------------------------------------------------------------------
+ //  External variable declarations
+diff --git a/mediatek/platform/mt6589/kernel/drivers/power/mt6320_fuel_gauge_bq24196.c b/mediatek/platform/mt6589/kernel/drivers/power/mt6320_fuel_gauge_bq24196.c
+index 33ef2f1..e84924a 100644
+--- a/mediatek/platform/mt6589/kernel/drivers/power/mt6320_fuel_gauge_bq24196.c
++++ b/mediatek/platform/mt6589/kernel/drivers/power/mt6320_fuel_gauge_bq24196.c
+@@ -2405,7 +2405,7 @@ void fgauge_Normal_Mode_Work(void)
+ 				//	( (gFG_capacity_by_v > 15 ) && ( g_rtc_fg_soc > 15 ))
+ 				//	)
+ 				if( ( g_rtc_fg_soc != 0 					) &&					
+-					( (g_rtc_fg_soc-gFG_capacity_by_v) < 20 )
++					( (g_rtc_fg_soc-gFG_capacity_by_v) < 50 )
+ 					)
+ 				{
+ 					gFG_capacity_by_v = g_rtc_fg_soc;			 
+@@ -2422,7 +2422,7 @@ void fgauge_Normal_Mode_Work(void)
+ 				//	( (gFG_capacity_by_v > 15 ) && ( g_rtc_fg_soc > 15 ))
+ 				//	)
+ 				if( ( g_rtc_fg_soc != 0 					) &&					
+-					( (gFG_capacity_by_v-g_rtc_fg_soc) < 20 )
++					( (gFG_capacity_by_v-g_rtc_fg_soc) < 50 )
+ 					)
+ 				{
+ 					gFG_capacity_by_v = g_rtc_fg_soc;			 
+@@ -2430,7 +2430,12 @@ void fgauge_Normal_Mode_Work(void)
+ 			
+ 				xlog_printk(ANDROID_LOG_INFO, "Power/Battery", "[FGADC] [2] g_rtc_fg_soc=%d, gFG_capacity_by_v=%d\n", 
+ 					g_rtc_fg_soc, gFG_capacity_by_v);
+-			}		
++			}
++			
++			if(g_rtc_fg_soc == 101)
++			{
++				gFG_capacity_by_v = 1;
++			}
+             //-------------------------------------------------------------------------------
+         
+             gFG_capacity = gFG_capacity_by_v;
+diff --git a/mediatek/platform/mt6589/kernel/drivers/power/mt_battery_bq24196.c b/mediatek/platform/mt6589/kernel/drivers/power/mt_battery_bq24196.c
+index ed4c6a6..08b4d54 100644
+--- a/mediatek/platform/mt6589/kernel/drivers/power/mt_battery_bq24196.c
++++ b/mediatek/platform/mt6589/kernel/drivers/power/mt_battery_bq24196.c
+@@ -1317,7 +1317,10 @@ static void mt6320_battery_update(struct mt6320_battery_data *bat_data)
+ 
+ #ifndef MTK_BQ27541_SUPPORT		
+ 	if (gFG_booting_counter_I_FLAG == 2) {
+-		set_rtc_spare_fg_value(bat_volt_check_point);
++		if(bat_volt_check_point == 0)
++			set_rtc_spare_fg_value(101);
++		else
++			set_rtc_spare_fg_value(bat_volt_check_point);
+ 	}
+ #endif
+ 
+@@ -1940,19 +1943,19 @@ void select_charging_curret_bq24196(void)
+         else if (BMT_status.charger_type == NONSTANDARD_CHARGER)
+         {
+             g_temp_CC_value = AC_CHARGER_CURRENT;
+-            bq24196_set_iinlim(0x6); //IN current limit at 2A			
++            bq24196_set_iinlim(0x5); //IN current limit at 1.5A			
+             bq24196_set_ac_current();
+         }
+         else if (BMT_status.charger_type == STANDARD_CHARGER)
+         {
+             g_temp_CC_value = AC_CHARGER_CURRENT;
+-            bq24196_set_iinlim(0x6); //IN current limit at 2A			
++            bq24196_set_iinlim(0x5); //IN current limit at 1.5A			
+             bq24196_set_ac_current();
+         }
+         else if (BMT_status.charger_type == CHARGING_HOST)
+         {
+             g_temp_CC_value = AC_CHARGER_CURRENT;
+-            bq24196_set_iinlim(0x6); //IN current limit at 2A			
++            bq24196_set_iinlim(0x5); //IN current limit at 1.5A			
+             bq24196_set_ac_current();
+         }
+         else
